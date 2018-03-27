@@ -21,6 +21,9 @@ import subprocess
 from subprocess import PIPE
 import sys
 import tarfile
+from xml.etree.ElementTree import XML
+from servo.util import download_file
+import urllib2
 
 from mach.registrar import Registrar
 import toml
@@ -29,6 +32,7 @@ from servo.packages import WINDOWS_MSVC as msvc_deps
 from servo.util import host_triple
 
 BIN_SUFFIX = ".exe" if sys.platform == "win32" else ""
+NIGHTLY_REPOSITORY_URL = "https://servo-builds.s3.amazonaws.com/"
 
 
 @contextlib.contextmanager
@@ -63,13 +67,6 @@ def find_dep_path_newest(package, bin_path):
     if candidates:
         return max(candidates, key=lambda c: path.getmtime(path.join(c, "output")))
     return None
-
-
-def get_browserhtml_path(binary_path):
-    browserhtml_path = find_dep_path_newest('browserhtml', binary_path)
-    if browserhtml_path:
-        return path.join(browserhtml_path, "out")
-    sys.exit("Could not find browserhtml package; perhaps you haven't built Servo.")
 
 
 def archive_deterministically(dir_to_archive, dest_archive, prepend_path=None):
@@ -278,7 +275,7 @@ class CommandBase(object):
         self.config["build"].setdefault("debug-mozjs", False)
         self.config["build"].setdefault("ccache", "")
         self.config["build"].setdefault("rustflags", "")
-        self.config["build"].setdefault("incremental", False)
+        self.config["build"].setdefault("incremental", None)
         self.config["build"].setdefault("thinlto", False)
 
         self.config.setdefault("android", {})
@@ -296,10 +293,6 @@ class CommandBase(object):
 
     def set_use_geckolib_toolchain(self, use_geckolib_toolchain=True):
         self._use_geckolib_toolchain = use_geckolib_toolchain
-        if use_geckolib_toolchain:
-            # We use Cargo Nightly 1.24 with Rust 1.22,
-            # it passes `-C incremental` to rustc, which is new in Rust 1.24.
-            self.config["build"]["incremental"] = False
 
     def toolchain(self):
         if self._use_geckolib_toolchain:
@@ -399,6 +392,88 @@ class CommandBase(object):
                                   " --release" if release else ""))
         sys.exit()
 
+    def get_nightly_binary_path(self, nightly_date):
+        if nightly_date is None:
+            return
+        if not nightly_date:
+            print(
+                "No nightly date has been provided although the --nightly or -n flag has been passed.")
+            sys.exit(1)
+        # Will alow us to fetch the relevant builds from the nightly repository
+        os_prefix = "linux"
+        if is_windows():
+            os_prefix = "windows-msvc"
+        if is_macosx():
+            print("The nightly flag is not supported on mac yet.")
+            sys.exit(1)
+        nightly_date = nightly_date.strip()
+        # Fetch the filename to download from the build list
+        repository_index = NIGHTLY_REPOSITORY_URL + "?list-type=2&prefix=nightly"
+        req = urllib2.Request(
+            "{}/{}/{}".format(repository_index, os_prefix, nightly_date))
+        try:
+            response = urllib2.urlopen(req).read()
+            tree = XML(response)
+            namespaces = {'ns': tree.tag[1:tree.tag.index('}')]}
+            file_to_download = tree.find('ns:Contents', namespaces).find(
+                'ns:Key', namespaces).text
+        except urllib2.URLError as e:
+            print("Could not fetch the available nightly versions from the repository : {}".format(
+                e.reason))
+            sys.exit(1)
+        except AttributeError as e:
+            print("Could not fetch a nightly version for date {} and platform {}".format(
+                nightly_date, os_prefix))
+            sys.exit(1)
+
+        nightly_target_directory = path.join(self.context.topdir, "target")
+        # ':' is not an authorized character for a file name on Windows
+        # make sure the OS specific separator is used
+        target_file_path = file_to_download.replace(':', '-').split('/')
+        destination_file = os.path.join(
+            nightly_target_directory, os.path.join(*target_file_path))
+        # Once extracted, the nightly folder name is the tar name without the extension
+        # (eg /foo/bar/baz.tar.gz extracts to /foo/bar/baz)
+        destination_folder = os.path.splitext(destination_file)[0]
+        nightlies_folder = path.join(
+            nightly_target_directory, 'nightly', os_prefix)
+
+        # Make sure the target directory exists
+        if not os.path.isdir(nightlies_folder):
+            print("The nightly folder for the target does not exist yet. Creating {}".format(
+                nightlies_folder))
+            os.makedirs(nightlies_folder)
+
+        # Download the nightly version
+        if os.path.isfile(path.join(nightlies_folder, destination_file)):
+            print("The nightly file {} has already been downloaded.".format(
+                destination_file))
+        else:
+            print("The nightly {} does not exist yet, downloading it.".format(
+                destination_file))
+            download_file(destination_file, NIGHTLY_REPOSITORY_URL +
+                          file_to_download, destination_file)
+
+        # Extract the downloaded nightly version
+        if os.path.isdir(destination_folder):
+            print("The nightly file {} has already been extracted.".format(
+                destination_folder))
+        else:
+            print("Extracting to {} ...".format(destination_folder))
+            if is_windows():
+                command = 'msiexec /a {} /qn TARGETDIR={}'.format(
+                    os.path.join(nightlies_folder, destination_file), destination_folder)
+                if subprocess.call(command, stdout=PIPE, stderr=PIPE) != 0:
+                    print("Could not extract the nightly executable from the msi package.")
+                    sys.exit(1)
+            else:
+                with tarfile.open(os.path.join(nightlies_folder, destination_file), "r") as tar:
+                    tar.extractall(destination_folder)
+        bin_folder = path.join(destination_folder, "servo")
+        if is_windows():
+            bin_folder = path.join(destination_folder, "PFiles", "Mozilla research", "Servo Tech Demo")
+        return path.join(bin_folder, "servo{}".format(BIN_SUFFIX))
+
     def build_env(self, hosts_file_path=None, target=None, is_build=False, geckolib=False, test_unit=False):
         """Return an extended environment dictionary."""
         env = os.environ.copy()
@@ -439,6 +514,8 @@ class CommandBase(object):
 
         if self.config["build"]["incremental"]:
             env["CARGO_INCREMENTAL"] = "1"
+        elif self.config["build"]["incremental"] is not None:
+            env["CARGO_INCREMENTAL"] = "0"
 
         if extra_lib:
             if sys.platform == "darwin":
@@ -532,9 +609,6 @@ class CommandBase(object):
 
     def geckolib_manifest(self):
         return path.join(self.context.topdir, "ports", "geckolib", "Cargo.toml")
-
-    def cef_manifest(self):
-        return path.join(self.context.topdir, "ports", "cef", "Cargo.toml")
 
     def servo_features(self):
         """Return a list of optional features to enable for the Servo crate"""

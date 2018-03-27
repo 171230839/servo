@@ -17,7 +17,7 @@ use gecko_bindings::structs::{nsStyleImage, nsresult, SheetType};
 use gecko_bindings::sugar::ns_style_coord::{CoordDataValue, CoordData, CoordDataMut};
 use std::f32::consts::PI;
 use stylesheets::{Origin, RulesMutateError};
-use values::computed::{Angle, CalcLengthOrPercentage, ComputedUrl, Gradient, Image};
+use values::computed::{Angle, CalcLengthOrPercentage, ComputedImageUrl, Gradient, Image};
 use values::computed::{Integer, LengthOrPercentage, LengthOrPercentageOrAuto, Percentage, TextAlign};
 use values::generics::box_::VerticalAlign;
 use values::generics::grid::{TrackListValue, TrackSize};
@@ -141,7 +141,7 @@ impl Angle {
             nsCSSUnit::eCSSUnit_Grad => Angle::Grad(value),
             nsCSSUnit::eCSSUnit_Radian => Angle::Rad(value),
             nsCSSUnit::eCSSUnit_Turn => Angle::Turn(value),
-            _ => panic!("Unexpected unit {:?} for angle", unit),
+            _ => panic!("Unexpected unit for angle"),
         }
     }
 }
@@ -155,12 +155,12 @@ impl nsStyleImage {
             },
             GenericImage::Url(ref url) => {
                 unsafe {
-                    Gecko_SetLayerImageImageValue(self, url.image_value.clone().unwrap().get());
+                    Gecko_SetLayerImageImageValue(self, url.image_value.get());
                 }
             },
             GenericImage::Rect(ref image_rect) => {
                 unsafe {
-                    Gecko_SetLayerImageImageValue(self, image_rect.url.image_value.clone().unwrap().get());
+                    Gecko_SetLayerImageImageValue(self, image_rect.url.image_value.get());
                     Gecko_InitializeImageCropRect(self);
 
                     // Set CropRect
@@ -413,19 +413,17 @@ impl nsStyleImage {
             nsStyleImageType::eStyleImageType_Element => {
                 use gecko_string_cache::Atom;
                 let atom = Gecko_GetImageElement(self);
-                Some(GenericImage::Element(Atom::from(atom)))
+                Some(GenericImage::Element(Atom::from_raw(atom)))
             },
-            x => panic!("Unexpected image type {:?}", x)
+            _ => panic!("Unexpected image type")
         }
     }
 
-    unsafe fn get_image_url(self: &nsStyleImage) -> ComputedUrl {
+    unsafe fn get_image_url(self: &nsStyleImage) -> ComputedImageUrl {
         use gecko_bindings::bindings::Gecko_GetURLValue;
         let url_value = Gecko_GetURLValue(self);
-        let mut url = ComputedUrl::from_url_value_data(url_value.as_ref().unwrap())
-                                    .expect("Could not convert to ComputedUrl");
-        url.build_image_value();
-        url
+        ComputedImageUrl::from_url_value_data(url_value.as_ref().unwrap())
+            .expect("Could not convert to ComputedUrl")
     }
 
     unsafe fn get_gradient(self: &nsStyleImage) -> Box<Gradient> {
@@ -503,7 +501,7 @@ impl nsStyleImage {
                         // FIXME: We should support ShapeExtent::Contain and ShapeExtent::Cover.
                         // But we can't choose those yet since Gecko does not support both values.
                         // https://bugzilla.mozilla.org/show_bug.cgi?id=1217664
-                        x => panic!("Found unexpected gecko_size: {:?}", x),
+                        _ => panic!("Found unexpected gecko_size"),
                     }
                 };
 
@@ -539,7 +537,7 @@ impl nsStyleImage {
                         };
                         EndingShape::Ellipse(length_percentage_keyword)
                     },
-                    x => panic!("Found unexpected mShape: {:?}", x),
+                    _ => panic!("Found unexpected mShape"),
                 };
 
                 let position = match (horizontal_style, vertical_style) {
@@ -707,9 +705,9 @@ pub mod basic_shape {
                 }
                 StyleBasicShapeType::Polygon => {
                     let fill_rule = if other.mFillRule == StyleFillRule::Evenodd {
-                        FillRule::EvenOdd
+                        FillRule::Evenodd
                     } else {
-                        FillRule::NonZero
+                        FillRule::Nonzero
                     };
                     let mut coords = Vec::with_capacity(other.mCoordinates.len() / 2);
                     for i in 0..(other.mCoordinates.len() / 2) {
@@ -842,7 +840,7 @@ pub mod basic_shape {
                 FillBox => GeometryBox::FillBox,
                 StrokeBox => GeometryBox::StrokeBox,
                 ViewBox => GeometryBox::ViewBox,
-                other => panic!("Unexpected StyleGeometryBox::{:?} while converting to GeometryBox", other),
+                _ => panic!("Unexpected StyleGeometryBox while converting to GeometryBox"),
             }
         }
     }
@@ -855,7 +853,7 @@ pub mod basic_shape {
                 PaddingBox => ShapeBox::PaddingBox,
                 BorderBox => ShapeBox::BorderBox,
                 MarginBox => ShapeBox::MarginBox,
-                other => panic!("Unexpected StyleGeometryBox::{:?} while converting to ShapeBox", other),
+                _ => panic!("Unexpected StyleGeometryBox while converting to ShapeBox"),
             }
         }
     }
@@ -1010,7 +1008,7 @@ impl TextAlign {
             structs::NS_STYLE_TEXT_ALIGN_MOZ_CENTER => TextAlign::MozCenter,
             structs::NS_STYLE_TEXT_ALIGN_CHAR => TextAlign::Char,
             structs::NS_STYLE_TEXT_ALIGN_END => TextAlign::End,
-            x => panic!("Found unexpected value in style struct for text-align property: {:?}", x),
+            _ => panic!("Found unexpected value in style struct for text-align property"),
         }
     }
 }

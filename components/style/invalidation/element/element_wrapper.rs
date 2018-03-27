@@ -5,13 +5,12 @@
 //! A wrapper over an element and a snapshot, that allows us to selector-match
 //! against a past state of the element.
 
-use {Atom, CaseSensitivityExt, LocalName, Namespace};
+use {Atom, CaseSensitivityExt, LocalName, Namespace, WeakAtom};
 use dom::TElement;
 use element_state::ElementState;
 use selector_parser::{NonTSPseudoClass, PseudoElement, SelectorImpl, Snapshot, SnapshotMap, AttrValue};
 use selectors::{Element, OpaqueElement};
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
-use selectors::context::VisitedHandlingMode;
 use selectors::matching::{ElementSelectorFlags, MatchingContext};
 use std::cell::Cell;
 use std::fmt;
@@ -45,7 +44,7 @@ pub trait ElementSnapshot : Sized {
 
     /// The ID attribute per this snapshot. Should only be called if
     /// `has_attrs()` returns true.
-    fn id_attr(&self) -> Option<Atom>;
+    fn id_attr(&self) -> Option<&WeakAtom>;
 
     /// Whether this snapshot contains the class `name`. Should only be called
     /// if `has_attrs()` returns true.
@@ -54,7 +53,8 @@ pub trait ElementSnapshot : Sized {
     /// A callback that should be called for each class of the snapshot. Should
     /// only be called if `has_attrs()` returns true.
     fn each_class<F>(&self, F)
-        where F: FnMut(&Atom);
+    where
+        F: FnMut(&Atom);
 
     /// The `xml:lang=""` or `lang=""` attribute value per this snapshot.
     fn lang_attr(&self) -> Option<AttrValue>;
@@ -64,7 +64,8 @@ pub trait ElementSnapshot : Sized {
 /// selector-match against a past state of the element.
 #[derive(Clone)]
 pub struct ElementWrapper<'a, E>
-    where E: TElement,
+where
+    E: TElement,
 {
     element: E,
     cached_snapshot: Cell<Option<&'a Snapshot>>,
@@ -72,7 +73,8 @@ pub struct ElementWrapper<'a, E>
 }
 
 impl<'a, E> ElementWrapper<'a, E>
-    where E: TElement,
+where
+    E: TElement,
 {
     /// Trivially constructs an `ElementWrapper`.
     pub fn new(el: E, snapshot_map: &'a SnapshotMap) -> Self {
@@ -109,7 +111,7 @@ impl<'a, E> ElementWrapper<'a, E>
         };
 
         match snapshot.state() {
-            Some(state) => state ^ self.element.get_state(),
+            Some(state) => state ^ self.element.state(),
             None => ElementState::empty(),
         }
     }
@@ -133,7 +135,8 @@ impl<'a, E> ElementWrapper<'a, E>
 }
 
 impl<'a, E> fmt::Debug for ElementWrapper<'a, E>
-    where E: TElement,
+where
+    E: TElement,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Ignore other fields for now, can change later if needed.
@@ -142,7 +145,8 @@ impl<'a, E> fmt::Debug for ElementWrapper<'a, E>
 }
 
 impl<'a, E> Element for ElementWrapper<'a, E>
-    where E: TElement,
+where
+    E: TElement,
 {
     type Impl = SelectorImpl;
 
@@ -150,7 +154,6 @@ impl<'a, E> Element for ElementWrapper<'a, E>
         &self,
         pseudo_class: &NonTSPseudoClass,
         context: &mut MatchingContext<Self::Impl>,
-        visited_handling: VisitedHandlingMode,
         _setter: &mut F,
     ) -> bool
     where
@@ -162,12 +165,11 @@ impl<'a, E> Element for ElementWrapper<'a, E>
             #[cfg(feature = "gecko")]
             NonTSPseudoClass::MozAny(ref selectors) => {
                 use selectors::matching::matches_complex_selector;
-                context.nesting_level += 1;
-                let result = selectors.iter().any(|s| {
-                    matches_complex_selector(s.iter(), self, context, _setter)
+                return context.nest(|context| {
+                    selectors.iter().any(|s| {
+                        matches_complex_selector(s.iter(), self, context, _setter)
+                    })
                 });
-                context.nesting_level -= 1;
-                return result
             }
 
             // :dir is implemented in terms of state flags, but which state flag
@@ -188,7 +190,7 @@ impl<'a, E> Element for ElementWrapper<'a, E>
                 }
                 let state = match self.snapshot().and_then(|s| s.state()) {
                     Some(snapshot_state) => snapshot_state,
-                    None => self.element.get_state(),
+                    None => self.element.state(),
                 };
                 return state.contains(selector_flag);
             }
@@ -199,10 +201,10 @@ impl<'a, E> Element for ElementWrapper<'a, E>
             // Instead, we use the `visited_handling` to determine if they
             // match.
             NonTSPseudoClass::Link => {
-                return self.is_link() && visited_handling.matches_unvisited()
+                return self.is_link() && context.visited_handling().matches_unvisited()
             }
             NonTSPseudoClass::Visited => {
-                return self.is_link() && visited_handling.matches_visited()
+                return self.is_link() && context.visited_handling().matches_visited()
             }
 
             #[cfg(feature = "gecko")]
@@ -237,7 +239,6 @@ impl<'a, E> Element for ElementWrapper<'a, E>
             return self.element.match_non_ts_pseudo_class(
                 pseudo_class,
                 context,
-                visited_handling,
                 &mut |_, _| {},
             )
         }
@@ -247,7 +248,6 @@ impl<'a, E> Element for ElementWrapper<'a, E>
                 self.element.match_non_ts_pseudo_class(
                     pseudo_class,
                     context,
-                    visited_handling,
                     &mut |_, _| {},
                 )
             }
@@ -271,47 +271,65 @@ impl<'a, E> Element for ElementWrapper<'a, E>
     }
 
     fn parent_element(&self) -> Option<Self> {
-        self.element.parent_element()
-            .map(|e| ElementWrapper::new(e, self.snapshot_map))
+        let parent = self.element.parent_element()?;
+        Some(Self::new(parent, self.snapshot_map))
+    }
+
+    fn parent_node_is_shadow_root(&self) -> bool {
+        self.element.parent_node_is_shadow_root()
+    }
+
+    fn containing_shadow_host(&self) -> Option<Self> {
+        let host = self.element.containing_shadow_host()?;
+        Some(Self::new(host, self.snapshot_map))
     }
 
     fn first_child_element(&self) -> Option<Self> {
-        self.element.first_child_element()
-            .map(|e| ElementWrapper::new(e, self.snapshot_map))
+        let child = self.element.first_child_element()?;
+        Some(Self::new(child, self.snapshot_map))
     }
 
     fn last_child_element(&self) -> Option<Self> {
-        self.element.last_child_element()
-            .map(|e| ElementWrapper::new(e, self.snapshot_map))
+        let child = self.element.last_child_element()?;
+        Some(Self::new(child, self.snapshot_map))
     }
 
     fn prev_sibling_element(&self) -> Option<Self> {
-        self.element.prev_sibling_element()
-            .map(|e| ElementWrapper::new(e, self.snapshot_map))
+        let sibling = self.element.prev_sibling_element()?;
+        Some(Self::new(sibling, self.snapshot_map))
     }
 
     fn next_sibling_element(&self) -> Option<Self> {
-        self.element.next_sibling_element()
-            .map(|e| ElementWrapper::new(e, self.snapshot_map))
+        let sibling = self.element.next_sibling_element()?;
+        Some(Self::new(sibling, self.snapshot_map))
     }
 
+    #[inline]
     fn is_html_element_in_html_document(&self) -> bool {
         self.element.is_html_element_in_html_document()
     }
 
-    fn get_local_name(&self) -> &<Self::Impl as ::selectors::SelectorImpl>::BorrowedLocalName {
-        self.element.get_local_name()
+    #[inline]
+    fn is_html_slot_element(&self) -> bool {
+        self.element.is_html_slot_element()
     }
 
-    fn get_namespace(&self) -> &<Self::Impl as ::selectors::SelectorImpl>::BorrowedNamespaceUrl {
-        self.element.get_namespace()
+    #[inline]
+    fn local_name(&self) -> &<Self::Impl as ::selectors::SelectorImpl>::BorrowedLocalName {
+        self.element.local_name()
     }
 
-    fn attr_matches(&self,
-                    ns: &NamespaceConstraint<&Namespace>,
-                    local_name: &LocalName,
-                    operation: &AttrSelectorOperation<&AttrValue>)
-                    -> bool {
+    #[inline]
+    fn namespace(&self) -> &<Self::Impl as ::selectors::SelectorImpl>::BorrowedNamespaceUrl {
+        self.element.namespace()
+    }
+
+    fn attr_matches(
+        &self,
+        ns: &NamespaceConstraint<&Namespace>,
+        local_name: &LocalName,
+        operation: &AttrSelectorOperation<&AttrValue>,
+    ) -> bool {
         match self.snapshot() {
             Some(snapshot) if snapshot.has_attrs() => {
                 snapshot.attr_matches(ns, local_name, operation)

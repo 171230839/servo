@@ -29,7 +29,7 @@ use app_units::Au;
 use block::{BlockFlow, FormattingContextType};
 use context::LayoutContext;
 use display_list::{DisplayListBuildState, StackingContextCollectionState};
-use euclid::{Transform3D, Point2D, Vector2D, Rect, Size2D};
+use euclid::{Point2D, Vector2D, Rect, Size2D};
 use flex::FlexFlow;
 use floats::{Floats, SpeculatedFloatPlacement};
 use flow_list::{FlowList, FlowListIterator, MutFlowListIterator};
@@ -43,7 +43,7 @@ use model::{CollapsibleMargins, IntrinsicISizes, MarginCollapseInfo};
 use multicol::MulticolFlow;
 use parallel::FlowParallelInfo;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
-use servo_geometry::{au_rect_to_f32_rect, f32_rect_to_au_rect, max_rect};
+use servo_geometry::{au_rect_to_f32_rect, f32_rect_to_au_rect, MaxRect};
 use std::fmt;
 use std::iter::Zip;
 use std::slice::IterMut;
@@ -67,6 +67,7 @@ use table_colgroup::TableColGroupFlow;
 use table_row::TableRowFlow;
 use table_rowgroup::TableRowGroupFlow;
 use table_wrapper::TableWrapperFlow;
+use webrender_api::LayoutTransform;
 
 /// This marker trait indicates that a type is a struct with `#[repr(C)]` whose first field
 /// is of type `BaseFlow` or some type that also implements this trait.
@@ -169,6 +170,12 @@ pub trait Flow: HasBaseFlow + fmt::Debug + Sync + Send + 'static {
     /// otherwise.
     fn as_mut_table_colgroup(&mut self) -> &mut TableColGroupFlow {
         panic!("called as_mut_table_colgroup() on a non-tablecolgroup flow")
+    }
+
+    /// If this is a table colgroup flow, returns the underlying object. Fails
+    /// otherwise.
+    fn as_table_colgroup(&self) -> &TableColGroupFlow {
+        panic!("called as_table_colgroup() on a non-tablecolgroup flow")
     }
 
     /// If this is a table rowgroup flow, returns the underlying object, borrowed mutably. Fails
@@ -329,8 +336,8 @@ pub trait Flow: HasBaseFlow + fmt::Debug + Sync + Send + 'static {
         let transform_2d = self.as_block()
                                .fragment
                                .transform_matrix(&position)
-                               .unwrap_or(Transform3D::identity())
-                               .to_2d();
+                               .unwrap_or(LayoutTransform::identity())
+                               .to_2d().to_untyped();
         let transformed_overflow = Overflow {
             paint: f32_rect_to_au_rect(transform_2d.transform_rect(
                                        &au_rect_to_f32_rect(overflow.paint))),
@@ -552,11 +559,13 @@ pub trait MutableOwnedFlowUtils {
     /// Sets the flow as the containing block for all absolute descendants that have been marked
     /// as having reached their containing block. This is needed in order to handle cases like:
     ///
-    ///     <div>
-    ///         <span style="position: relative">
-    ///             <span style="position: absolute; ..."></span>
-    ///         </span>
-    ///     </div>
+    /// ```html
+    /// <div>
+    ///     <span style="position: relative">
+    ///         <span style="position: absolute; ..."></span>
+    ///     </span>
+    /// </div>
+    /// ```
     fn take_applicable_absolute_descendants(&mut self,
                                             absolute_descendants: &mut AbsoluteDescendants);
 }
@@ -742,12 +751,14 @@ pub struct AbsoluteDescendantInfo {
     /// Whether the absolute descendant has reached its containing block. This exists so that we
     /// can handle cases like the following:
     ///
-    ///     <div>
-    ///         <span id=a style="position: absolute; ...">foo</span>
-    ///         <span style="position: relative">
-    ///             <span id=b style="position: absolute; ...">bar</span>
-    ///         </span>
-    ///     </div>
+    /// ```html
+    /// <div>
+    ///     <span id=a style="position: absolute; ...">foo</span>
+    ///     <span style="position: relative">
+    ///         <span id=b style="position: absolute; ...">bar</span>
+    ///     </span>
+    /// </div>
+    /// ```
     ///
     /// When we go to create the `InlineFlow` for the outer `div`, our absolute descendants will
     /// be `a` and `b`. At this point, we need a way to distinguish between the two, because the
@@ -1031,8 +1042,8 @@ impl BaseFlow {
                     }
                 }
 
-                if !style.get_counters().counter_reset.0.is_empty() ||
-                        !style.get_counters().counter_increment.0.is_empty() {
+                if !style.get_counters().counter_reset.is_empty() ||
+                        !style.get_counters().counter_increment.is_empty() {
                     flags.insert(FlowFlags::AFFECTS_COUNTERS)
                 }
             }
@@ -1062,7 +1073,7 @@ impl BaseFlow {
             absolute_cb: ContainingBlockLink::new(),
             early_absolute_position_info: EarlyAbsolutePositionInfo::new(writing_mode),
             late_absolute_position_info: LateAbsolutePositionInfo::new(),
-            clip: max_rect(),
+            clip: MaxRect::max_rect(),
             flags: flags,
             writing_mode: writing_mode,
             thread_id: 0,
@@ -1144,6 +1155,19 @@ impl BaseFlow {
     pub fn might_have_floats_out(&self) -> bool {
         self.speculated_float_placement_out.left > Au(0) ||
             self.speculated_float_placement_out.right > Au(0)
+    }
+
+
+    /// Compute the fragment position relative to the parent stacking context. If the fragment
+    /// itself establishes a stacking context, then the origin of its position will be (0, 0)
+    /// for the purposes of this computation.
+    pub fn stacking_relative_border_box_for_display_list(&self, fragment: &Fragment) -> Rect<Au> {
+        fragment.stacking_relative_border_box(
+            &self.stacking_relative_position,
+            &self.early_absolute_position_info.relative_containing_block_size,
+            self.early_absolute_position_info.relative_containing_block_mode,
+            CoordinateSystem::Own,
+        )
     }
 }
 
@@ -1343,11 +1367,13 @@ impl MutableOwnedFlowUtils for FlowRef {
     /// Sets the flow as the containing block for all absolute descendants that have been marked
     /// as having reached their containing block. This is needed in order to handle cases like:
     ///
-    ///     <div>
-    ///         <span style="position: relative">
-    ///             <span style="position: absolute; ..."></span>
-    ///         </span>
-    ///     </div>
+    /// ```html
+    /// <div>
+    ///     <span style="position: relative">
+    ///         <span style="position: absolute; ..."></span>
+    ///     </span>
+    /// </div>
+    /// ```
     fn take_applicable_absolute_descendants(&mut self,
                                             absolute_descendants: &mut AbsoluteDescendants) {
         let mut applicable_absolute_descendants = AbsoluteDescendants::new();

@@ -108,7 +108,7 @@ class TestRunner(object):
             raise
 
     def wait(self):
-        self.executor.protocol.wait()
+        self.executor.wait()
         self.send_message("wait_finished")
 
     def send_message(self, command, *args):
@@ -195,7 +195,7 @@ class BrowserManager(object):
             self.logger.debug("Starting browser with settings %r" % self.browser_settings)
             self.browser.start(**self.browser_settings)
             self.browser_pid = self.browser.pid()
-        except:
+        except Exception:
             self.logger.warning("Failure during init %s" % traceback.format_exc())
             if self.init_timer is not None:
                 self.init_timer.cancel()
@@ -229,7 +229,6 @@ class BrowserManager(object):
     def cleanup(self):
         if self.init_timer is not None:
             self.init_timer.cancel()
-        self.browser.cleanup()
 
     def check_for_crashes(self):
         self.browser.check_for_crashes()
@@ -305,6 +304,7 @@ class TestRunnerManager(threading.Thread):
         # This is started in the actual new thread
         self.logger = None
 
+        self.test_count = 0
         self.unexpected_count = 0
 
         # This may not really be what we want
@@ -566,10 +566,11 @@ class TestRunnerManager(threading.Thread):
         expected = test.expected()
         status = file_result.status if file_result.status != "EXTERNAL-TIMEOUT" else "TIMEOUT"
 
-        if file_result.status in  ("TIMEOUT", "EXTERNAL-TIMEOUT"):
+        if file_result.status in ("TIMEOUT", "EXTERNAL-TIMEOUT"):
             if self.browser.check_for_crashes():
                 status = "CRASH"
 
+        self.test_count += 1
         is_unexpected = expected != status
         if is_unexpected:
             self.unexpected_count += 1
@@ -585,8 +586,8 @@ class TestRunnerManager(threading.Thread):
 
         restart_before_next = (test.restart_after or
                                file_result.status in ("CRASH", "EXTERNAL-TIMEOUT") or
-                               ((subtest_unexpected or is_unexpected)
-                                and self.restart_on_unexpected))
+                               ((subtest_unexpected or is_unexpected) and
+                                self.restart_on_unexpected))
 
         if (self.pause_after_test or
             (self.pause_on_unexpected and (subtest_unexpected or is_unexpected))):
@@ -689,7 +690,7 @@ class TestRunnerManager(threading.Thread):
                 break
             else:
                 if cmd == "log":
-                     self.log(*data)
+                    self.log(*data)
                 else:
                     self.logger.warning("%r: %r" % (cmd, data))
         while True:
@@ -789,6 +790,9 @@ class ManagerGroup(object):
         as possible"""
         self.stop_flag.set()
         self.logger.debug("Stop flag set in ManagerGroup")
+
+    def test_count(self):
+        return sum(item.test_count for item in self.pool)
 
     def unexpected_count(self):
         return sum(item.unexpected_count for item in self.pool)

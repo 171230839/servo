@@ -78,14 +78,12 @@ If you've already partially compiled servo but forgot to do this step, run `./ma
 #### On Debian-based Linuxes
 
 ``` sh
-sudo apt install git curl freeglut3-dev autoconf libx11-dev \
+sudo apt install git curl autoconf libx11-dev \
     libfreetype6-dev libgl1-mesa-dri libglib2.0-dev xorg-dev \
     gperf g++ build-essential cmake virtualenv python-pip \
     libssl1.0-dev libbz2-dev libosmesa6-dev libxmu6 libxmu-dev \
-    libglu1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev \
-    pulseaudio dbus-x11 libavcodec-dev libavformat-dev \
-    libavutil-dev libswresample-dev  libswscale-dev libdbus-1-dev \
-    libpulse-dev clang
+    libglu1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev \
+    libharfbuzz-dev ccache
 ```
 
 If you using a version prior to **Ubuntu 17.04** or **Debian Sid**, replace `libssl1.0-dev` with `libssl-dev`.
@@ -97,55 +95,42 @@ If `virtualenv` does not exist, try `python-virtualenv`.
 #### On Fedora
 
 ``` sh
-sudo dnf install curl freeglut-devel libtool gcc-c++ libXi-devel \
+sudo dnf install curl libtool gcc-c++ libXi-devel \
     freetype-devel mesa-libGL-devel mesa-libEGL-devel glib2-devel libX11-devel libXrandr-devel gperf \
     fontconfig-devel cabextract ttmkfdir python python-virtualenv python-pip expat-devel \
     rpm-build openssl-devel cmake bzip2-devel libXcursor-devel libXmu-devel mesa-libOSMesa-devel \
-    dbus-devel ncurses-devel pulseaudio-libs-devel clang clang-libs
+    dbus-devel ncurses-devel harfbuzz-devel ccache mesa-libGLU-devel
 ```
 #### On CentOS
 
 ``` sh
-sudo yum install curl freeglut-devel libtool gcc-c++ libXi-devel \
+sudo yum install curl libtool gcc-c++ libXi-devel \
     freetype-devel mesa-libGL-devel mesa-libEGL-devel glib2-devel libX11-devel libXrandr-devel gperf \
     fontconfig-devel cabextract ttmkfdir python python-virtualenv python-pip expat-devel \
     rpm-build openssl-devel cmake3 bzip2-devel libXcursor-devel libXmu-devel mesa-libOSMesa-devel \
-    dbus-devel ncurses-devel python34 pulseaudio-libs-devel clang clang-libs llvm-toolset-7
+    dbus-devel ncurses-devel python34 harfbuzz-devel ccache
 ```
-
-Build inside `llvm-toolset` and `devtoolset`:
-```
-scl enable devtoolset-7 llvm-toolset-7 bash
-```
-with the following environmental variables set:
-```
-export CMAKE=cmake3
-export LIBCLANG_PATH=/opt/rh/llvm-toolset-7/root/usr/lib64
-```
-
 #### On openSUSE Linux
 ``` sh
 sudo zypper install libX11-devel libexpat-devel libbz2-devel Mesa-libEGL-devel Mesa-libGL-devel cabextract cmake \
     dbus-1-devel fontconfig-devel freetype-devel gcc-c++ git glib2-devel gperf \
     harfbuzz-devel libOSMesa-devel libXcursor-devel libXi-devel libXmu-devel libXrandr-devel libopenssl-devel \
-    python-pip python-virtualenv rpm-build glu-devel llvm-clang libclang
+    python-pip python-virtualenv rpm-build glu-devel ccache
 ```
 #### On Arch Linux
 
 ``` sh
-sudo pacman -S --needed base-devel git python2 python2-virtualenv python2-pip mesa cmake bzip2 libxmu glu pkg-config clang
+sudo pacman -S --needed base-devel git python2 python2-virtualenv python2-pip mesa cmake bzip2 libxmu glu \
+    pkg-config ttf-fira-sans harfbuzz ccache
 ```
 #### On Gentoo Linux
 
 ```sh
-sudo emerge net-misc/curl media-libs/freeglut \
+sudo emerge net-misc/curl \
     media-libs/freetype media-libs/mesa dev-util/gperf \
     dev-python/virtualenv dev-python/pip dev-libs/openssl \
-    x11-libs/libXmu media-libs/glu x11-base/xorg-server sys-devel/clang
-```
-with the following environment variable set:
-```sh
-export LIBCLANG_PATH="/usr/lib64/llvm/*/lib64"
+    x11-libs/libXmu media-libs/glu x11-base/xorg-server \
+    media-libs/harfbuzz dev-util/ccache
 ```
 #### On Windows (MSVC)
 
@@ -267,11 +252,6 @@ Run Servo with the command:
 # For example
 ./mach run https://www.google.com
 ```
-
-Also, don't miss the info on the [browserhtml page](https://github.com/browserhtml/browserhtml) on how to run the Browser.html
-full tech demo (it provides a more browser-like experience than just browsing a single
-URL with servo).
-
 
 ### Commandline Arguments
 

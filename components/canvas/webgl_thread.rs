@@ -8,6 +8,7 @@ use euclid::Size2D;
 use fnv::FnvHashMap;
 use gleam::gl;
 use offscreen_gl_context::{GLContext, GLContextAttributes, GLLimits, NativeGLContextMethods};
+use serde_bytes::ByteBuf;
 use std::thread;
 use super::gl_context::{GLContextFactory, GLContextWrapper};
 use webrender;
@@ -353,7 +354,9 @@ impl<VR: WebVRRenderHandler + 'static, OB: WebGLThreadObserver> WebGLThread<VR, 
                 self.dom_outputs.insert(pipeline_id, DOMToTextureData {
                     context_id, texture_id, document_id, size
                 });
-                self.webrender_api.enable_frame_output(document_id, pipeline_id, true);
+                let mut txn = webrender_api::Transaction::new();
+                txn.enable_frame_output(pipeline_id, true);
+                self.webrender_api.send_transaction(document_id, txn);
             },
             DOMToTextureCommand::Lock(pipeline_id, gl_sync, sender) => {
                 let contexts = &self.contexts;
@@ -376,7 +379,9 @@ impl<VR: WebVRRenderHandler + 'static, OB: WebGLThreadObserver> WebGLThread<VR, 
                 if let Some((pipeline_id, document_id)) = self.dom_outputs.iter()
                                                                           .find(|&(_, v)| v.texture_id == texture_id)
                                                                           .map(|(k, v)| (*k, v.document_id)) {
-                    self.webrender_api.enable_frame_output(document_id, pipeline_id, false);
+                    let mut txn = webrender_api::Transaction::new();
+                    txn.enable_frame_output(pipeline_id, false);
+                    self.webrender_api.send_transaction(document_id, txn);
                     self.dom_outputs.remove(&pipeline_id);
                 }
             },
@@ -490,6 +495,7 @@ impl<VR: WebVRRenderHandler + 'static, OB: WebGLThreadObserver> WebGLThread<VR, 
             format: webrender_api::ImageFormat::BGRA8,
             offset: 0,
             is_opaque: !alpha,
+            allow_mipmaps: false,
         }
     }
 
@@ -498,7 +504,9 @@ impl<VR: WebVRRenderHandler + 'static, OB: WebGLThreadObserver> WebGLThread<VR, 
         let data = webrender_api::ExternalImageData {
             id: webrender_api::ExternalImageId(context_id.0 as u64),
             channel_index: 0,
-            image_type: webrender_api::ExternalImageType::Texture2DHandle,
+            image_type: webrender_api::ExternalImageType::TextureHandle(
+                webrender_api::TextureTarget::Default,
+            ),
         };
         webrender_api::ImageData::External(data)
     }
@@ -608,10 +616,12 @@ impl<T: WebGLExternalImageApi> webrender::ExternalImageHandler for WebGLExternal
         let (texture_id, size) = self.handler.lock(ctx_id);
 
         webrender::ExternalImage {
-            u0: 0.0,
-            u1: size.width as f32,
-            v1: 0.0,
-            v0: size.height as f32,
+            uv: webrender_api::TexelRect::new(
+                0.0,
+                size.height as f32,
+                size.width as f32,
+                0.0,
+            ),
             source: webrender::ExternalImageSource::NativeTexture(texture_id),
         }
 
@@ -742,6 +752,8 @@ impl WebGLImpl {
                 Self::active_uniform(ctx.gl(), program_id, index, chan),
             WebGLCommand::GetAttribLocation(program_id, name, chan) =>
                 Self::attrib_location(ctx.gl(), program_id, name, chan),
+            WebGLCommand::GetFramebufferAttachmentParameter(target, attachment, pname, chan) =>
+                Self::get_framebuffer_attachment_parameter(ctx.gl(), target, attachment, pname, chan),
             WebGLCommand::GetVertexAttrib(index, pname, chan) =>
                 Self::vertex_attrib(ctx.gl(), index, pname, chan),
             WebGLCommand::GetVertexAttribOffset(index, pname, chan) =>
@@ -750,6 +762,8 @@ impl WebGLImpl {
                 Self::buffer_parameter(ctx.gl(), target, param_id, chan),
             WebGLCommand::GetParameter(param_id, chan) =>
                 Self::parameter(ctx.gl(), param_id, chan),
+            WebGLCommand::GetTexParameter(target, pname, chan) =>
+                Self::get_tex_parameter(ctx.gl(), target, pname, chan),
             WebGLCommand::GetProgramParameter(program_id, param_id, chan) =>
                 Self::program_parameter(ctx.gl(), program_id, param_id, chan),
             WebGLCommand::GetShaderParameter(shader_id, param_id, chan) =>
@@ -848,8 +862,12 @@ impl WebGLImpl {
                 ctx.gl().vertex_attrib_pointer_f32(attrib_id, size, normalized, stride, offset),
             WebGLCommand::VertexAttribPointer(attrib_id, size, data_type, normalized, stride, offset) =>
                 ctx.gl().vertex_attrib_pointer(attrib_id, size, data_type, normalized, stride, offset),
-            WebGLCommand::Viewport(x, y, width, height) =>
-                ctx.gl().viewport(x, y, width, height),
+            WebGLCommand::GetViewport(sender) => {
+                sender.send(ctx.gl().get_viewport()).unwrap();
+            }
+            WebGLCommand::SetViewport(x, y, width, height) => {
+                ctx.gl().viewport(x, y, width, height);
+            }
             WebGLCommand::TexImage2D(target, level, internal, width, height, format, data_type, data) =>
                 ctx.gl().tex_image_2d(target, level, internal, width, height,
                                       /*border*/0, format, data_type, Some(&data)),
@@ -875,19 +893,30 @@ impl WebGLImpl {
                 ctx.gl().delete_vertex_arrays(&[id.get()]),
             WebGLCommand::BindVertexArray(id) =>
                 ctx.gl().bind_vertex_array(id.map_or(0, WebGLVertexArrayId::get)),
+            WebGLCommand::AliasedPointSizeRange(sender) => {
+                sender.send(ctx.gl().alias_point_size_range()).unwrap()
+            }
         }
 
         // TODO: update test expectations in order to enable debug assertions
         //if cfg!(debug_assertions) {
             let error = ctx.gl().get_error();
-            assert!(error == gl::NO_ERROR, "Unexpected WebGL error: 0x{:x} ({})", error, error);
+            assert_eq!(error, gl::NO_ERROR, "Unexpected WebGL error: 0x{:x} ({})", error, error);
         //}
     }
 
-    fn read_pixels(gl: &gl::Gl, x: i32, y: i32, width: i32, height: i32, format: u32, pixel_type: u32,
-                   chan: WebGLSender<Vec<u8>>) {
+    fn read_pixels(
+        gl: &gl::Gl,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: u32,
+        pixel_type: u32,
+        chan: WebGLSender<ByteBuf>,
+    ) {
       let result = gl.read_pixels(x, y, width, height, format, pixel_type);
-      chan.send(result).unwrap()
+      chan.send(result.into()).unwrap()
     }
 
     fn active_attrib(gl: &gl::Gl,
@@ -1043,13 +1072,20 @@ impl WebGLImpl {
 
             // Int32Array
             gl::MAX_VIEWPORT_DIMS |
-            gl::SCISSOR_BOX |
-            gl::VIEWPORT => Err(WebGLError::InvalidEnum),
+            gl::SCISSOR_BOX => Err(WebGLError::InvalidEnum),
 
             // Invalid parameters
             _ => Err(WebGLError::InvalidEnum)
         };
 
+        chan.send(result).unwrap();
+    }
+
+    fn get_tex_parameter(gl: &gl::Gl,
+                       target: u32,
+                       pname: u32,
+                       chan: WebGLSender<i32> ) {
+        let result = gl.get_tex_parameter_iv(target, pname);
         chan.send(result).unwrap();
     }
 
@@ -1086,25 +1122,16 @@ impl WebGLImpl {
     fn vertex_attrib_offset(gl: &gl::Gl,
                             index: u32,
                             pname: u32,
-                            chan: WebGLSender<WebGLResult<isize>>) {
-        let result = match pname {
-                gl::VERTEX_ATTRIB_ARRAY_POINTER => Ok(gl.get_vertex_attrib_pointer_v(index, pname)),
-                _ => Err(WebGLError::InvalidEnum),
-        };
-
+                            chan: WebGLSender<isize>) {
+        let result = gl.get_vertex_attrib_pointer_v(index, pname);
         chan.send(result).unwrap();
     }
 
     fn buffer_parameter(gl: &gl::Gl,
                         target: u32,
                         param_id: u32,
-                        chan: WebGLSender<WebGLResult<WebGLParameter>>) {
-        let result = match param_id {
-            gl::BUFFER_SIZE |
-            gl::BUFFER_USAGE =>
-                Ok(WebGLParameter::Int(gl.get_buffer_parameter_iv(target, param_id))),
-            _ => Err(WebGLError::InvalidEnum),
-        };
+                        chan: WebGLSender<i32>) {
+        let result = gl.get_buffer_parameter_iv(target, param_id);
 
         chan.send(result).unwrap();
     }
@@ -1147,26 +1174,25 @@ impl WebGLImpl {
     fn shader_precision_format(gl: &gl::Gl,
                                shader_type: u32,
                                precision_type: u32,
-                               chan: WebGLSender<WebGLResult<(i32, i32, i32)>>) {
-        let result = match precision_type {
-            gl::LOW_FLOAT |
-            gl::MEDIUM_FLOAT |
-            gl::HIGH_FLOAT |
-            gl::LOW_INT |
-            gl::MEDIUM_INT |
-            gl::HIGH_INT => {
-                Ok(gl.get_shader_precision_format(shader_type, precision_type))
-            },
-            _=> {
-                Err(WebGLError::InvalidEnum)
-            }
-        };
-
+                               chan: WebGLSender<(i32, i32, i32)>) {
+        let result = gl.get_shader_precision_format(shader_type, precision_type);
         chan.send(result).unwrap();
     }
 
     fn get_extensions(gl: &gl::Gl, chan: WebGLSender<String>) {
         chan.send(gl.get_string(gl::EXTENSIONS)).unwrap();
+    }
+
+    // https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.6
+    fn get_framebuffer_attachment_parameter(
+        gl: &gl::Gl,
+        target: u32,
+        attachment: u32,
+        pname: u32,
+        chan: WebGLSender<i32>
+    ) {
+        let parameter = gl.get_framebuffer_attachment_parameter_iv(target, attachment, pname);
+        chan.send(parameter).unwrap();
     }
 
     fn uniform_location(gl: &gl::Gl,

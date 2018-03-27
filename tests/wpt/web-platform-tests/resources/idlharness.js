@@ -177,7 +177,7 @@ IdlArray.prototype.add_idls = function(raw_idls, options)
 };
 
 //@}
-IdlArray.prototype.add_untested_idls = function(raw_idls)
+IdlArray.prototype.add_untested_idls = function(raw_idls, options)
 //@{
 {
     /** Entry point.  See documentation at beginning of file. */
@@ -193,7 +193,7 @@ IdlArray.prototype.add_untested_idls = function(raw_idls)
             }
         }
     }
-    this.internal_add_idls(parsed_idls);
+    this.internal_add_idls(parsed_idls, options);
 };
 
 //@}
@@ -274,13 +274,13 @@ IdlArray.prototype.internal_add_idls = function(parsed_idls, options)
         }
 
         parsed_idl.array = this;
-        if (parsed_idl.name in this.members)
-        {
-            throw "Duplicate identifier " + parsed_idl.name;
-        }
         if (should_skip(parsed_idl.name))
         {
             return;
+        }
+        if (parsed_idl.name in this.members)
+        {
+            throw "Duplicate identifier " + parsed_idl.name;
         }
         switch(parsed_idl.type)
         {
@@ -1007,6 +1007,13 @@ IdlInterface.prototype.has_constants = function()
 };
 //@}
 
+IdlInterface.prototype.get_unscopables = function()
+{
+    return this.members.filter(function(member) {
+        return member.isUnscopable;
+    });
+};
+
 IdlInterface.prototype.is_global = function()
 //@{
 {
@@ -1552,6 +1559,69 @@ IdlInterface.prototype.test_self = function()
         assert_equals(self[this.name].prototype.constructor, self[this.name],
                       this.name + '.prototype.constructor is not the same object as ' + this.name);
     }.bind(this), this.name + ' interface: existence and properties of interface prototype object\'s "constructor" property');
+
+
+    test(function()
+    {
+        if (this.is_callback() && !this.has_constants()) {
+            return;
+        }
+
+        assert_own_property(self, this.name,
+                            "self does not have own property " + format_value(this.name));
+
+        if (this.is_callback()) {
+            assert_false("prototype" in self[this.name],
+                         this.name + ' should not have a "prototype" property');
+            return;
+        }
+
+        assert_own_property(self[this.name], "prototype",
+                            'interface "' + this.name + '" does not have own property "prototype"');
+
+        // If the interface has any member declared with the [Unscopable] extended
+        // attribute, then there must be a property on the interface prototype object
+        // whose name is the @@unscopables symbol, which has the attributes
+        // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true },
+        // and whose value is an object created as follows...
+        var unscopables = this.get_unscopables().map(m => m.name);
+        var proto = self[this.name].prototype;
+        if (unscopables.length != 0) {
+            assert_own_property(
+                proto, Symbol.unscopables,
+                this.name + '.prototype should have an @@unscopables property');
+            var desc = Object.getOwnPropertyDescriptor(proto, Symbol.unscopables);
+            assert_false("get" in desc,
+                         this.name + ".prototype[Symbol.unscopables] should not have a getter");
+            assert_false("set" in desc, this.name + ".prototype[Symbol.unscopables] should not have a setter");
+            assert_false(desc.writable, this.name + ".prototype[Symbol.unscopables] should not be writable");
+            assert_false(desc.enumerable, this.name + ".prototype[Symbol.unscopables] should not be enumerable");
+            assert_true(desc.configurable, this.name + ".prototype[Symbol.unscopables] should be configurable");
+            assert_equals(desc.value, proto[Symbol.unscopables],
+                          this.name + '.prototype[Symbol.unscopables] should be in the descriptor');
+            assert_equals(typeof desc.value, "object",
+                          this.name + '.prototype[Symbol.unscopables] should be an object');
+            assert_equals(Object.getPrototypeOf(desc.value), null,
+                          this.name + '.prototype[Symbol.unscopables] should have a null prototype');
+            assert_equals(Object.getOwnPropertySymbols(desc.value).length,
+                          0,
+                          this.name + '.prototype[Symbol.unscopables] should have the right number of symbol-named properties');
+
+            // Check that we do not have _extra_ unscopables.  Checking that we
+            // have all the ones we should will happen in the per-member tests.
+            var observed = Object.getOwnPropertyNames(desc.value);
+            for (var prop of observed) {
+                assert_not_equals(unscopables.indexOf(prop),
+                                  -1,
+                                  this.name + '.prototype[Symbol.unscopables] has unexpected property "' + prop + '"');
+            }
+        } else {
+            assert_equals(Object.getOwnPropertyDescriptor(self[this.name].prototype, Symbol.unscopables),
+                          undefined,
+                          this.name + '.prototype should not have @@unscopables');
+        }
+    }.bind(this), this.name + ' interface: existence and properties of interface prototype object\'s @@unscopables property');
+
 };
 
 //@}
@@ -1805,6 +1875,10 @@ IdlInterface.prototype.test_member_attribute = function(member)
 
         }
     }.bind(this));
+
+    test(function () {
+        this.do_member_unscopable_asserts(member);
+    }.bind(this), 'Unscopable handled correctly for ' + member.name + ' property on ' + this.name);
 };
 
 //@}
@@ -1869,6 +1943,41 @@ IdlInterface.prototype.test_member_operation = function(member)
         }
         this.do_member_operation_asserts(memberHolderObject, member, a_test);
     }.bind(this));
+
+    test(function () {
+        this.do_member_unscopable_asserts(member);
+    }.bind(this),
+         'Unscopable handled correctly for ' + member.name + "(" +
+         member.arguments.map(
+             function(m) {return m.idlType.idlType; } ).join(", ")
+         + ")" + ' on ' + this.name);
+};
+
+IdlInterface.prototype.do_member_unscopable_asserts = function(member)
+{
+    // Check that if the member is unscopable then it's in the
+    // @@unscopables object properly.
+    if (!member.isUnscopable) {
+        return;
+    }
+
+    var unscopables = self[this.name].prototype[Symbol.unscopables];
+    var prop = member.name;
+    var propDesc = Object.getOwnPropertyDescriptor(unscopables, prop);
+    assert_equals(typeof propDesc, "object",
+                  this.name + '.prototype[Symbol.unscopables].' + prop + ' must exist')
+    assert_false("get" in propDesc,
+                 this.name + '.prototype[Symbol.unscopables].' + prop + ' must have no getter');
+    assert_false("set" in propDesc,
+                 this.name + '.prototype[Symbol.unscopables].' + prop + ' must have no setter');
+    assert_true(propDesc.writable,
+                this.name + '.prototype[Symbol.unscopables].' + prop + ' must be writable');
+    assert_true(propDesc.enumerable,
+                this.name + '.prototype[Symbol.unscopables].' + prop + ' must be enumerable');
+    assert_true(propDesc.configurable,
+                this.name + '.prototype[Symbol.unscopables].' + prop + ' must be configurable');
+    assert_equals(propDesc.value, true,
+                  this.name + '.prototype[Symbol.unscopables].' + prop + ' must have the value `true`');
 };
 
 //@}
@@ -1960,6 +2069,7 @@ IdlInterface.prototype.add_iterable_members = function(member)
 };
 
 IdlInterface.prototype.test_to_json_operation = function(memberHolderObject, member) {
+    var instanceName = memberHolderObject.constructor.name;
     if (member.has_extended_attribute("Default")) {
         var map = this.default_to_json_operation();
         test(function() {
@@ -1973,12 +2083,12 @@ IdlInterface.prototype.test_to_json_operation = function(memberHolderObject, mem
                 this.array.assert_type_is(json[k], type);
                 delete json[k];
             }, this);
-        }.bind(this), "Test default toJSON operation of " + this.name);
+        }.bind(this), "Test default toJSON operation of " + instanceName);
     } else {
         test(function() {
-            assert_true(this.array.is_json_type(member.idlType), JSON.stringify(member.idlType) + " is not an appropriate return value for the toJSON operation of " + this.name);
+            assert_true(this.array.is_json_type(member.idlType), JSON.stringify(member.idlType) + " is not an appropriate return value for the toJSON operation of " + instanceName);
             this.array.assert_type_is(memberHolderObject.toJSON(), member.idlType);
-        }.bind(this), "Test toJSON operation of " + this.name);
+        }.bind(this), "Test toJSON operation of " + instanceName);
     }
 };
 
@@ -2270,7 +2380,7 @@ IdlInterface.prototype.test_interface_of = function(desc, obj, exception, expect
         if (!exposed_in(exposure_set(member, this.exposureSet))) {
             test(function() {
                 assert_false(member.name in obj);
-            }.bind(this), this.name + "interface: " + desc + 'must not have property "' + member.name + '"');
+            }.bind(this), this.name + " interface: " + desc + ' must not have property "' + member.name + '"');
             continue;
         }
         if (member.type == "attribute" && member.isUnforgeable)
@@ -2552,6 +2662,7 @@ function IdlInterfaceMember(obj)
     }
 
     this.isUnforgeable = this.has_extended_attribute("Unforgeable");
+    this.isUnscopable = this.has_extended_attribute("Unscopable");
 }
 
 //@}

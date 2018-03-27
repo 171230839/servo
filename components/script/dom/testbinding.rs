@@ -21,7 +21,6 @@ use dom::bindings::codegen::UnionTypes::{StringOrLongSequence, StringOrStringSeq
 use dom::bindings::codegen::UnionTypes::{StringOrUnsignedLong, StringOrBoolean, UnsignedLongOrBoolean};
 use dom::bindings::error::{Error, Fallible};
 use dom::bindings::mozmap::MozMap;
-use dom::bindings::nonnull::NonNullJSObjectPtr;
 use dom::bindings::num::Finite;
 use dom::bindings::refcounted::TrustedPromise;
 use dom::bindings::reflector::{DomObject, Reflector, reflect_dom_object};
@@ -39,10 +38,12 @@ use js::jsapi::{HandleObject, HandleValue, Heap, JSContext, JSObject};
 use js::jsapi::{JS_NewPlainObject, JS_NewUint8ClampedArray};
 use js::jsval::{JSVal, NullValue};
 use js::rust::CustomAutoRooterGuard;
+use js::typedarray;
 use script_traits::MsDuration;
 use servo_config::prefs::PREFS;
 use std::borrow::ToOwned;
 use std::ptr;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use timers::OneshotTimerCallback;
 
@@ -152,20 +153,18 @@ impl TestBindingMethods for TestBinding {
     }
     fn SetUnion9Attribute(&self, _: ByteStringOrLong) {}
     #[allow(unsafe_code)]
-    unsafe fn ArrayAttribute(&self, cx: *mut JSContext) -> NonNullJSObjectPtr {
+    unsafe fn ArrayAttribute(&self, cx: *mut JSContext) -> NonNull<JSObject> {
         rooted!(in(cx) let array = JS_NewUint8ClampedArray(cx, 16));
-        assert!(!array.is_null());
-        NonNullJSObjectPtr::new_unchecked(array.get())
+        NonNull::new(array.get()).expect("got a null pointer")
     }
     #[allow(unsafe_code)]
     unsafe fn AnyAttribute(&self, _: *mut JSContext) -> JSVal { NullValue() }
     #[allow(unsafe_code)]
     unsafe fn SetAnyAttribute(&self, _: *mut JSContext, _: HandleValue) {}
     #[allow(unsafe_code)]
-    unsafe fn ObjectAttribute(&self, cx: *mut JSContext) -> NonNullJSObjectPtr {
+    unsafe fn ObjectAttribute(&self, cx: *mut JSContext) -> NonNull<JSObject> {
         rooted!(in(cx) let obj = JS_NewPlainObject(cx));
-        assert!(!obj.is_null());
-        NonNullJSObjectPtr::new_unchecked(obj.get())
+        NonNull::new(obj.get()).expect("got a null pointer")
     }
     #[allow(unsafe_code)]
     unsafe fn SetObjectAttribute(&self, _: *mut JSContext, _: *mut JSObject) {}
@@ -221,7 +220,7 @@ impl TestBindingMethods for TestBinding {
         self.url.set(url);
     }
     #[allow(unsafe_code)]
-    unsafe fn GetObjectAttributeNullable(&self, _: *mut JSContext) -> Option<NonNullJSObjectPtr> { None }
+    unsafe fn GetObjectAttributeNullable(&self, _: *mut JSContext) -> Option<NonNull<JSObject>> { None }
     #[allow(unsafe_code)]
     unsafe fn SetObjectAttributeNullable(&self, _: *mut JSContext, _: *mut JSObject) {}
     fn GetUnionAttributeNullable(&self) -> Option<HTMLElementOrLong> {
@@ -273,7 +272,7 @@ impl TestBindingMethods for TestBinding {
     #[allow(unsafe_code)]
     unsafe fn ReceiveAny(&self, _: *mut JSContext) -> JSVal { NullValue() }
     #[allow(unsafe_code)]
-    unsafe fn ReceiveObject(&self, cx: *mut JSContext) -> NonNullJSObjectPtr {
+    unsafe fn ReceiveObject(&self, cx: *mut JSContext) -> NonNull<JSObject> {
         self.ObjectAttribute(cx)
     }
     fn ReceiveUnion(&self) -> HTMLElementOrLong { HTMLElementOrLong::Long(0) }
@@ -294,6 +293,14 @@ impl TestBindingMethods for TestBinding {
     fn ReceiveSequence(&self) -> Vec<i32> { vec![1] }
     fn ReceiveInterfaceSequence(&self) -> Vec<DomRoot<Blob>> {
         vec![Blob::new(&self.global(), BlobImpl::new_from_bytes(vec![]), "".to_owned())]
+    }
+    #[allow(unsafe_code)]
+    unsafe fn ReceiveUnionIdentity(
+        &self,
+        _: *mut JSContext,
+        arg: UnionTypes::StringOrObject,
+    ) -> UnionTypes::StringOrObject {
+        arg
     }
 
     fn ReceiveNullableBoolean(&self) -> Option<bool> { Some(false) }
@@ -317,7 +324,7 @@ impl TestBindingMethods for TestBinding {
         Some(Blob::new(&self.global(), BlobImpl::new_from_bytes(vec![]), "".to_owned()))
     }
     #[allow(unsafe_code)]
-    unsafe fn ReceiveNullableObject(&self, cx: *mut JSContext) -> Option<NonNullJSObjectPtr> {
+    unsafe fn ReceiveNullableObject(&self, cx: *mut JSContext) -> Option<NonNull<JSObject>> {
         self.GetObjectAttributeNullable(cx)
     }
     fn ReceiveNullableUnion(&self) -> Option<HTMLElementOrLong> {
@@ -341,12 +348,12 @@ impl TestBindingMethods for TestBinding {
     fn ReceiveNullableSequence(&self) -> Option<Vec<i32>> { Some(vec![1]) }
     fn ReceiveTestDictionaryWithSuccessOnKeyword(&self) -> RootedTraceableBox<TestDictionary> {
         RootedTraceableBox::new(TestDictionary {
-            anyValue: Heap::default(),
+            anyValue: RootedTraceableBox::new(Heap::default()),
             booleanValue: None,
             byteValue: None,
             dict: RootedTraceableBox::new(TestDictionaryDefaults {
                 UnrestrictedDoubleValue: 0.0,
-                anyValue: Heap::default(),
+                anyValue: RootedTraceableBox::new(Heap::default()),
                 booleanValue: false,
                 bytestringValue: ByteString::new(vec![]),
                 byteValue: 0,
@@ -362,7 +369,7 @@ impl TestBindingMethods for TestBinding {
                 nullableFloatValue: None,
                 nullableLongLongValue: None,
                 nullableLongValue: None,
-                nullableObjectValue: Heap::default(),
+                nullableObjectValue: RootedTraceableBox::new(Heap::default()),
                 nullableOctetValue: None,
                 nullableShortValue: None,
                 nullableStringValue: None,
@@ -430,6 +437,9 @@ impl TestBindingMethods for TestBinding {
     fn PassByteString(&self, _: ByteString) {}
     fn PassEnum(&self, _: TestEnum) {}
     fn PassInterface(&self, _: &Blob) {}
+    fn PassTypedArray(&self, _: CustomAutoRooterGuard<typedarray::Int8Array>) {}
+    fn PassTypedArray2(&self, _: CustomAutoRooterGuard<typedarray::ArrayBuffer>) {}
+    fn PassTypedArray3(&self, _: CustomAutoRooterGuard<typedarray::ArrayBufferView>) {}
     fn PassUnion(&self, _: HTMLElementOrLong) {}
     fn PassUnion2(&self, _: EventOrString) {}
     fn PassUnion3(&self, _: BlobOrString) {}
@@ -441,6 +451,7 @@ impl TestBindingMethods for TestBinding {
     fn PassUnion9(&self, _: UnionTypes::TestDictionaryOrLong) {}
     #[allow(unsafe_code)]
     unsafe fn PassUnion10(&self, _: *mut JSContext, _: UnionTypes::StringOrObject) {}
+    fn PassUnion11(&self, _: UnionTypes::ArrayBufferOrArrayBufferView) {}
     fn PassUnionWithTypedef(&self, _: DocumentOrTestTypedef) {}
     fn PassUnionWithTypedef2(&self, _: LongSequenceOrTestTypedef) {}
     #[allow(unsafe_code)]
@@ -460,6 +471,9 @@ impl TestBindingMethods for TestBinding {
     unsafe fn PassObjectSequence(&self, _: *mut JSContext, _: CustomAutoRooterGuard<Vec<*mut JSObject>>) {}
     fn PassStringSequence(&self, _: Vec<DOMString>) {}
     fn PassInterfaceSequence(&self, _: Vec<DomRoot<Blob>>) {}
+
+    fn PassOverloaded(&self, _: CustomAutoRooterGuard<typedarray::ArrayBuffer>) {}
+    fn PassOverloaded_(&self, _: DOMString) {}
 
     fn PassNullableBoolean(&self, _: Option<bool>) {}
     fn PassNullableByte(&self, _: Option<i8>) {}
@@ -481,6 +495,7 @@ impl TestBindingMethods for TestBinding {
     fn PassNullableInterface(&self, _: Option<&Blob>) {}
     #[allow(unsafe_code)]
     unsafe fn PassNullableObject(&self, _: *mut JSContext, _: *mut JSObject) {}
+    fn PassNullableTypedArray(&self, _: CustomAutoRooterGuard<Option<typedarray::Int8Array>>) { }
     fn PassNullableUnion(&self, _: Option<HTMLElementOrLong>) {}
     fn PassNullableUnion2(&self, _: Option<EventOrString>) {}
     fn PassNullableUnion3(&self, _: Option<StringOrLongSequence>) {}

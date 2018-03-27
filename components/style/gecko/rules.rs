@@ -5,8 +5,8 @@
 //! Bindings for CSS Rule objects
 
 use byteorder::{BigEndian, WriteBytesExt};
-use computed_values::{font_feature_settings, font_stretch, font_style, font_weight};
-use counter_style;
+use computed_values::{font_stretch, font_style, font_weight};
+use counter_style::{self, CounterBound};
 use cssparser::UnicodeRange;
 use font_face::{FontFaceRuleData, Source, FontDisplay, FontWeight};
 use gecko_bindings::bindings;
@@ -17,9 +17,12 @@ use gecko_bindings::sugar::refptr::{RefPtr, UniqueRefPtr};
 use nsstring::nsString;
 use properties::longhands::font_language_override;
 use shared_lock::{ToCssWithGuard, SharedRwLockReadGuard};
-use std::{fmt, str};
+use std::fmt::{self, Write};
+use std::str;
+use str::CssStringWriter;
 use values::computed::font::FamilyName;
-use values::generics::FontSettings;
+use values::generics::font::FontTag;
+use values::specified::font::{SpecifiedFontVariationSettings, SpecifiedFontFeatureSettings};
 
 /// A @font-face rule
 pub type FontFaceRule = RefPtr<nsCSSFontFaceRule>;
@@ -48,24 +51,41 @@ impl ToNsCssValue for FontWeight {
     }
 }
 
-impl ToNsCssValue for font_feature_settings::T {
+impl ToNsCssValue for FontTag {
     fn convert(self, nscssvalue: &mut nsCSSValue) {
-        match self {
-            FontSettings::Normal => nscssvalue.set_normal(),
-            FontSettings::Tag(tags) => {
-                nscssvalue.set_pair_list(tags.into_iter().map(|entry| {
-                    let mut feature = nsCSSValue::null();
-                    let mut raw = [0u8; 4];
-                    (&mut raw[..]).write_u32::<BigEndian>(entry.tag).unwrap();
-                    feature.set_string(str::from_utf8(&raw).unwrap());
+        let mut raw = [0u8; 4];
+        (&mut raw[..]).write_u32::<BigEndian>(self.0).unwrap();
+        nscssvalue.set_string(str::from_utf8(&raw).unwrap());
+    }
+}
 
-                    let mut index = nsCSSValue::null();
-                    index.set_integer(entry.value.0 as i32);
-
-                    (feature, index)
-                }))
-            }
+impl ToNsCssValue for SpecifiedFontFeatureSettings {
+    fn convert(self, nscssvalue: &mut nsCSSValue) {
+        if self.0.is_empty() {
+            nscssvalue.set_normal();
+            return;
         }
+
+        nscssvalue.set_pair_list(self.0.into_iter().map(|entry| {
+            let mut index = nsCSSValue::null();
+            index.set_integer(entry.value.value());
+            (entry.tag.into(), index)
+        }))
+    }
+}
+
+impl ToNsCssValue for SpecifiedFontVariationSettings {
+    fn convert(self, nscssvalue: &mut nsCSSValue) {
+        if self.0.is_empty() {
+            nscssvalue.set_normal();
+            return;
+        }
+
+        nscssvalue.set_pair_list(self.0.into_iter().map(|entry| {
+            let mut value = nsCSSValue::null();
+            value.set_number(entry.value.into());
+            (entry.tag.into(), value)
+        }))
     }
 }
 
@@ -200,8 +220,7 @@ impl From<FontFaceRuleData> for FontFaceRule {
 }
 
 impl ToCssWithGuard for FontFaceRule {
-    fn to_css<W>(&self, _guard: &SharedRwLockReadGuard, dest: &mut W) -> fmt::Result
-    where W: fmt::Write {
+    fn to_css(&self, _guard: &SharedRwLockReadGuard, dest: &mut CssStringWriter) -> fmt::Result {
         let mut css_text = nsString::new();
         unsafe {
             bindings::Gecko_CSSFontFaceRule_GetCssText(self.get(), &mut *css_text);
@@ -237,8 +256,7 @@ impl From<counter_style::CounterStyleRuleData> for CounterStyleRule {
 }
 
 impl ToCssWithGuard for CounterStyleRule {
-    fn to_css<W>(&self, _guard: &SharedRwLockReadGuard, dest: &mut W) -> fmt::Result
-    where W: fmt::Write {
+    fn to_css(&self, _guard: &SharedRwLockReadGuard, dest: &mut CssStringWriter) -> fmt::Result {
         let mut css_text = nsString::new();
         unsafe {
             bindings::Gecko_CSSCounterStyle_GetCssText(self.get(), &mut *css_text);
@@ -263,7 +281,7 @@ impl ToNsCssValue for counter_style::System {
                 let mut a = nsCSSValue::null();
                 let mut b = nsCSSValue::null();
                 a.set_enum(structs::NS_STYLE_COUNTER_SYSTEM_FIXED as i32);
-                b.set_integer(first_symbol_value.unwrap_or(1));
+                b.set_integer(first_symbol_value.map_or(1, |v| v.value()));
                 nscssvalue.set_pair(&a, &b);
             }
             Extends(other) => {
@@ -295,7 +313,7 @@ impl ToNsCssValue for counter_style::Symbol {
     fn convert(self, nscssvalue: &mut nsCSSValue) {
         match self {
             counter_style::Symbol::String(s) => nscssvalue.set_string(&s),
-            counter_style::Symbol::Ident(s) => nscssvalue.set_ident(&s),
+            counter_style::Symbol::Ident(s) => nscssvalue.set_ident_from_atom(&s.0),
         }
     }
 }
@@ -306,9 +324,9 @@ impl ToNsCssValue for counter_style::Ranges {
             nscssvalue.set_auto();
         } else {
             nscssvalue.set_pair_list(self.0.into_iter().map(|range| {
-                fn set_bound(bound: Option<i32>, nscssvalue: &mut nsCSSValue) {
-                    if let Some(finite) = bound {
-                        nscssvalue.set_integer(finite)
+                fn set_bound(bound: CounterBound, nscssvalue: &mut nsCSSValue) {
+                    if let CounterBound::Integer(finite) = bound {
+                        nscssvalue.set_integer(finite.value())
                     } else {
                         nscssvalue.set_enum(structs::NS_STYLE_COUNTER_RANGE_INFINITE as i32)
                     }
@@ -327,7 +345,7 @@ impl ToNsCssValue for counter_style::Pad {
     fn convert(self, nscssvalue: &mut nsCSSValue) {
         let mut min_length = nsCSSValue::null();
         let mut pad_with = nsCSSValue::null();
-        min_length.set_integer(self.0 as i32);
+        min_length.set_integer(self.0.value());
         pad_with.set_from(self.1);
         nscssvalue.set_pair(&min_length, &pad_with);
     }
@@ -354,7 +372,7 @@ impl ToNsCssValue for counter_style::AdditiveSymbols {
         nscssvalue.set_pair_list(self.0.into_iter().map(|tuple| {
             let mut weight = nsCSSValue::null();
             let mut symbol = nsCSSValue::null();
-            weight.set_integer(tuple.weight as i32);
+            weight.set_integer(tuple.weight.value());
             symbol.set_from(tuple.symbol);
             (weight, symbol)
         }));

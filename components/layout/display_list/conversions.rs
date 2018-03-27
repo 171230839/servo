@@ -10,6 +10,7 @@ use style::computed_values::transform_style::T as TransformStyle;
 use style::values::RGBA;
 use style::values::computed::{BorderStyle, Filter};
 use style::values::generics::effects::Filter as GenericFilter;
+use style::values::specified::border::BorderImageRepeatKeyword;
 use webrender_api as wr;
 
 pub trait ToLayout {
@@ -148,5 +149,18 @@ impl ToLayout for Vector2D<Au> {
     type Type = wr::LayoutVector2D;
     fn to_layout(&self) -> Self::Type {
         wr::LayoutVector2D::new(self.x.to_f32_px(), self.y.to_f32_px())
+    }
+}
+
+impl ToLayout for BorderImageRepeatKeyword {
+    type Type = wr::RepeatMode;
+
+    fn to_layout(&self) -> Self::Type {
+        match *self {
+            BorderImageRepeatKeyword::Stretch => wr::RepeatMode::Stretch,
+            BorderImageRepeatKeyword::Repeat => wr::RepeatMode::Repeat,
+            BorderImageRepeatKeyword::Round => wr::RepeatMode::Round,
+            BorderImageRepeatKeyword::Space => wr::RepeatMode::Space,
+        }
     }
 }

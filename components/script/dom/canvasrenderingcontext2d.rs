@@ -9,7 +9,6 @@ use canvas_traits::canvas::{RadialGradientStyle, RepetitionStyle, byte_swap_and_
 use cssparser::{Parser, ParserInput, RGBA};
 use cssparser::Color as CSSColor;
 use dom::bindings::cell::DomRefCell;
-use dom::bindings::codegen::Bindings::CSSStyleDeclarationBinding::CSSStyleDeclarationMethods;
 use dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding;
 use dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasFillRule;
 use dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasImageSource;
@@ -17,7 +16,6 @@ use dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasLin
 use dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasLineJoin;
 use dom::bindings::codegen::Bindings::CanvasRenderingContext2DBinding::CanvasRenderingContext2DMethods;
 use dom::bindings::codegen::Bindings::ImageDataBinding::ImageDataMethods;
-use dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use dom::bindings::codegen::UnionTypes::StringOrCanvasGradientOrCanvasPattern;
 use dom::bindings::error::{Error, ErrorResult, Fallible};
 use dom::bindings::inheritance::Castable;
@@ -27,13 +25,14 @@ use dom::bindings::root::{Dom, DomRoot, LayoutDom};
 use dom::bindings::str::DOMString;
 use dom::canvasgradient::{CanvasGradient, CanvasGradientStyle, ToFillOrStrokeStyle};
 use dom::canvaspattern::CanvasPattern;
+use dom::element::Element;
 use dom::globalscope::GlobalScope;
 use dom::htmlcanvaselement::HTMLCanvasElement;
 use dom::imagedata::ImageData;
 use dom::node::{Node, NodeDamage, window_from_node};
 use dom_struct::dom_struct;
 use euclid::{Transform2D, Point2D, Vector2D, Rect, Size2D, vec2};
-use ipc_channel::ipc::{self, IpcSender};
+use ipc_channel::ipc::IpcSender;
 use net_traits::image::base::PixelFormat;
 use net_traits::image_cache::CanRequestImages;
 use net_traits::image_cache::ImageCache;
@@ -42,6 +41,7 @@ use net_traits::image_cache::ImageResponse;
 use net_traits::image_cache::ImageState;
 use net_traits::image_cache::UsePlaceholder;
 use num_traits::ToPrimitive;
+use profile_traits::ipc;
 use script_traits::ScriptMsg;
 use servo_url::ServoUrl;
 use std::{cmp, fmt, mem};
@@ -129,7 +129,7 @@ impl CanvasRenderingContext2D {
                          size: Size2D<i32>)
                          -> CanvasRenderingContext2D {
         debug!("Creating new canvas rendering context.");
-        let (sender, receiver) = ipc::channel().unwrap();
+        let (sender, receiver) = ipc::channel(global.time_profiler_chan().clone()).unwrap();
         let script_to_constellation_chan = global.script_to_constellation_chan();
         debug!("Asking constellation to create new canvas thread.");
         script_to_constellation_chan.send(ScriptMsg::CreateCanvasPaintThread(size, sender)).unwrap();
@@ -372,7 +372,7 @@ impl CanvasRenderingContext2D {
                 None => return Err(Error::InvalidState),
             };
 
-            let (sender, receiver) = ipc::channel().unwrap();
+            let (sender, receiver) = ipc::channel(self.global().time_profiler_chan().clone()).unwrap();
             let msg = CanvasMsg::Canvas2d(Canvas2dMsg::DrawImageInOther(
                 self.ipc_renderer.clone(),
                 image_size,
@@ -453,13 +453,13 @@ impl CanvasRenderingContext2D {
         }
 
         let smoothing_enabled = self.state.borrow().image_smoothing_enabled;
-        self.ipc_renderer
-            .send(CanvasMsg::Canvas2d(Canvas2dMsg::DrawImage(image_data,
-                                                             image_size,
-                                                             dest_rect,
-                                                             source_rect,
-                                                             smoothing_enabled)))
-            .unwrap();
+        self.ipc_renderer.send(CanvasMsg::Canvas2d(Canvas2dMsg::DrawImage(
+            image_data.into(),
+            image_size,
+            dest_rect,
+            source_rect,
+            smoothing_enabled,
+        ))).unwrap();
         self.mark_as_dirty();
         Ok(())
     }
@@ -543,18 +543,11 @@ impl CanvasRenderingContext2D {
                         Some(ref canvas) => &**canvas,
                     };
 
-                    let window = window_from_node(canvas);
+                    let canvas_element = canvas.upcast::<Element>();
 
-                    let style = window.GetComputedStyle(canvas.upcast(), None);
-
-                    let element_not_rendered =
-                        !canvas.upcast::<Node>().is_in_doc() ||
-                        style.GetPropertyValue(DOMString::from("display")) == "none";
-
-                    if element_not_rendered {
-                        Ok(RGBA::new(0, 0, 0, 255))
-                    } else {
-                        self.parse_color(&style.GetPropertyValue(DOMString::from("color")))
+                    match canvas_element.style() {
+                        Some(ref s) if canvas_element.has_css_layout_box() => Ok(s.get_color().color),
+                        _ => Ok(RGBA::new(0, 0, 0, 255))
                     }
                 },
                 _ => Err(())
@@ -790,7 +783,7 @@ impl CanvasRenderingContext2DMethods for CanvasRenderingContext2D {
             CanvasFillRule::Nonzero => FillRule::Nonzero,
             CanvasFillRule::Evenodd => FillRule::Evenodd,
         };
-        let (sender, receiver) = ipc::channel::<bool>().unwrap();
+        let (sender, receiver) = ipc::channel::<bool>(self.global().time_profiler_chan().clone()).unwrap();
         self.ipc_renderer
             .send(CanvasMsg::Canvas2d(Canvas2dMsg::IsPointInPath(x, y, fill_rule, sender)))
             .unwrap();
@@ -1134,7 +1127,7 @@ impl CanvasRenderingContext2DMethods for CanvasRenderingContext2D {
         let sh = cmp::max(1, sh.to_u32().unwrap());
         let sw = cmp::max(1, sw.to_u32().unwrap());
 
-        let (sender, receiver) = ipc::channel::<Vec<u8>>().unwrap();
+        let (sender, receiver) = ipc::channel(self.global().time_profiler_chan().clone()).unwrap();
         let dest_rect = Rect::new(Point2D::new(sx.to_i32().unwrap(), sy.to_i32().unwrap()),
                                   Size2D::new(sw as i32, sh as i32));
         let canvas_size = self.canvas.as_ref().map(|c| c.get_size()).unwrap_or(Size2D::zero());
@@ -1142,7 +1135,7 @@ impl CanvasRenderingContext2DMethods for CanvasRenderingContext2D {
         self.ipc_renderer
             .send(CanvasMsg::Canvas2d(Canvas2dMsg::GetImageData(dest_rect, canvas_size, sender)))
             .unwrap();
-        let mut data = receiver.recv().unwrap();
+        let mut data = Vec::from(receiver.recv().unwrap());
 
         // Un-premultiply alpha
         for chunk in data.chunks_mut(4) {
@@ -1181,10 +1174,12 @@ impl CanvasRenderingContext2DMethods for CanvasRenderingContext2D {
 
         let dirty_rect = Rect::new(Point2D::new(*dirty_x, *dirty_y),
                                    Size2D::new(*dirty_width, *dirty_height));
-        let msg = CanvasMsg::Canvas2d(Canvas2dMsg::PutImageData(data,
-                                                                offset,
-                                                                image_data_size,
-                                                                dirty_rect));
+        let msg = CanvasMsg::Canvas2d(Canvas2dMsg::PutImageData(
+            data.into(),
+            offset,
+            image_data_size,
+            dirty_rect,
+        ));
         self.ipc_renderer.send(msg).unwrap();
         self.mark_as_dirty();
     }

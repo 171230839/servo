@@ -21,7 +21,6 @@
 #![plugin(script_plugins)]
 #![cfg_attr(not(feature = "unrooted_must_root_lint"), allow(unknown_lints))]
 
-extern crate angle;
 extern crate app_units;
 extern crate audio_video_metadata;
 extern crate base64;
@@ -42,9 +41,6 @@ extern crate domobject_derive;
 extern crate encoding_rs;
 extern crate euclid;
 extern crate fnv;
-#[allow(unused_extern_crates)]
-#[cfg(all(any(target_os = "macos", target_os = "linux"), not(any(target_arch = "arm", target_arch = "aarch64"))))]
-extern crate gecko_media;
 extern crate gleam;
 extern crate half;
 #[macro_use] extern crate html5ever;
@@ -67,14 +63,13 @@ extern crate metrics;
 extern crate mime;
 extern crate mime_guess;
 extern crate mitochondria;
+extern crate mozangle;
 #[macro_use]
 extern crate mozjs as js;
 extern crate msg;
 extern crate net_traits;
-extern crate nonzero;
 extern crate num_traits;
 extern crate offscreen_gl_context;
-extern crate open;
 extern crate parking_lot;
 extern crate phf;
 #[macro_use]
@@ -86,6 +81,7 @@ extern crate script_layout_interface;
 extern crate script_traits;
 extern crate selectors;
 extern crate serde;
+extern crate serde_bytes;
 extern crate servo_allocator;
 extern crate servo_arc;
 #[macro_use] extern crate servo_atoms;

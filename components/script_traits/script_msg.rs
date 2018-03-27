@@ -9,15 +9,14 @@ use IFrameLoadInfo;
 use IFrameLoadInfoWithData;
 use LayoutControlMsg;
 use LoadData;
-use MozBrowserEvent;
 use WorkerGlobalScopeInit;
 use WorkerScriptLoadOrigin;
 use canvas_traits::canvas::CanvasMsg;
 use devtools_traits::{ScriptToDevtoolsControlMsg, WorkerId};
-use euclid::{Point2D, Size2D, TypedSize2D};
+use euclid::{Size2D, TypedSize2D};
 use gfx_traits::Epoch;
 use ipc_channel::ipc::{IpcReceiver, IpcSender};
-use msg::constellation_msg::{BrowsingContextId, FrameType, PipelineId, TraversalDirection};
+use msg::constellation_msg::{BrowsingContextId, PipelineId, TraversalDirection};
 use msg::constellation_msg::{Key, KeyModifiers, KeyState};
 use net_traits::CoreResourceMsg;
 use net_traits::request::RequestInit;
@@ -25,8 +24,9 @@ use net_traits::storage_thread::StorageType;
 use servo_url::ImmutableOrigin;
 use servo_url::ServoUrl;
 use style_traits::CSSPixel;
-use style_traits::cursor::Cursor;
+use style_traits::cursor::CursorKind;
 use style_traits::viewport::ViewportConstraints;
+use webrender_api::{DeviceIntPoint, DeviceUintSize};
 
 /// Messages from the layout to the constellation.
 #[derive(Deserialize, Serialize)]
@@ -39,7 +39,7 @@ pub enum LayoutMsg {
     /// the time when the frame with the given ID (epoch) is painted.
     PendingPaintMetric(PipelineId, Epoch),
     /// Requests that the constellation inform the compositor of the a cursor change.
-    SetCursor(Cursor),
+    SetCursor(CursorKind),
     /// Notifies the constellation that the viewport has been constrained in some manner
     ViewportConstrained(PipelineId, ViewportConstraints),
 }
@@ -89,7 +89,7 @@ pub enum ScriptMsg {
     /// Get the browsing context id for a given pipeline.
     GetBrowsingContextId(PipelineId, IpcSender<Option<BrowsingContextId>>),
     /// Get the parent info for a given pipeline.
-    GetParentInfo(PipelineId, IpcSender<Option<(PipelineId, FrameType)>>),
+    GetParentInfo(PipelineId, IpcSender<Option<PipelineId>>),
     /// <head> tag finished parsing
     HeadParsed,
     /// All pending loads are complete, and the `load` event for this pipeline
@@ -102,8 +102,6 @@ pub enum ScriptMsg {
     AbortLoadUrl,
     /// Post a message to the currently active window of a given browsing context.
     PostMessage(BrowsingContextId, Option<ImmutableOrigin>, Vec<u8>),
-    /// Dispatch a mozbrowser event to the parent of a mozbrowser iframe.
-    MozBrowserEvent(PipelineId, MozBrowserEvent),
     /// HTMLIFrameElement Forward or Back traversal.
     TraverseHistory(TraversalDirection),
     /// Gets the length of the joint session history from the constellation.
@@ -138,12 +136,10 @@ pub enum ScriptMsg {
     SetTitle(Option<String>),
     /// Send a key event
     SendKeyEvent(Option<char>, Key, KeyState, KeyModifiers),
-    /// Get Window Informations size and position
-    GetClientWindow(IpcSender<(Size2D<u32>, Point2D<i32>)>),
     /// Move the window to a point
-    MoveTo(Point2D<i32>),
+    MoveTo(DeviceIntPoint),
     /// Resize the window to size
-    ResizeTo(Size2D<u32>),
+    ResizeTo(DeviceUintSize),
     /// Script has handled a touch event, and either prevented or allowed default actions.
     TouchEventProcessed(EventResult),
     /// A log entry, with the top-level browsing context id and thread name
@@ -157,10 +153,12 @@ pub enum ScriptMsg {
     RegisterServiceWorker(ScopeThings, ServoUrl),
     /// Enter or exit fullscreen
     SetFullscreenState(bool),
+    /// Get Window Informations size and position
+    GetClientWindow(IpcSender<(DeviceUintSize, DeviceIntPoint)>),
     /// Get the screen size (pixel)
-    GetScreenSize(IpcSender<(Size2D<u32>)>),
+    GetScreenSize(IpcSender<(DeviceUintSize)>),
     /// Get the available screen size (pixel)
-    GetScreenAvailSize(IpcSender<(Size2D<u32>)>),
+    GetScreenAvailSize(IpcSender<(DeviceUintSize)>),
     /// Requests that the compositor shut down.
     Exit,
 }

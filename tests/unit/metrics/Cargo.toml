@@ -10,14 +10,13 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
-euclid = "0.16"
 gfx = {path = "../../../components/gfx"}
 gfx_traits = {path = "../../../components/gfx_traits"}
-ipc-channel = "0.9"
+ipc-channel = "0.10"
 metrics = {path = "../../../components/metrics"}
 msg = {path = "../../../components/msg"}
 net_traits = {path = "../../../components/net_traits"}
 profile_traits = {path = "../../../components/profile_traits"}
 servo_url = {path = "../../../components/url"}
-style = {path = "../../../components/style"}
 time = "0.1.12"
+webrender_api = {git = "https://github.com/servo/webrender"}

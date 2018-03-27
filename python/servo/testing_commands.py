@@ -77,6 +77,19 @@ def create_parser_wpt():
     return parser
 
 
+def create_parser_manifest_update():
+    import manifestupdate
+    return manifestupdate.create_parser()
+
+
+def run_update(topdir, check_clean=False, rebuild=False, **kwargs):
+    import manifestupdate
+    from wptrunner import wptlogging
+    logger = wptlogging.setup(kwargs, {"mach": sys.stdout})
+    wpt_dir = os.path.abspath(os.path.join(topdir, 'tests', 'wpt'))
+    manifestupdate.update(logger, wpt_dir, check_clean, rebuild)
+
+
 @CommandProvider
 class MachCommands(CommandBase):
     DEFAULT_RENDER_MODE = "cpu"
@@ -231,27 +244,27 @@ class MachCommands(CommandBase):
             else:
                 test_patterns.append(test)
 
-        in_crate_packages = []
-
-        # Since the selectors tests have no corresponding selectors_tests crate in tests/unit,
-        # we need to treat them separately from those that do.
-        try:
-            packages.remove('selectors')
-            in_crate_packages += ["selectors"]
-        except KeyError:
-            pass
-
+        self_contained_tests = [
+            "gfx",
+            "layout",
+            "msg",
+            "net",
+            "net_traits",
+            "selectors",
+            "servo_config",
+            "servo_remutex",
+        ]
         if not packages:
             packages = set(os.listdir(path.join(self.context.topdir, "tests", "unit"))) - set(['.DS_Store'])
-            in_crate_packages += ["selectors"]
+            packages |= set(self_contained_tests)
 
-        # Since the selectors tests have no corresponding selectors_tests crate in tests/unit,
-        # we need to treat them separately from those that do.
-        try:
-            packages.remove('selectors')
-            in_crate_packages += ["selectors"]
-        except KeyError:
-            pass
+        in_crate_packages = []
+        for crate in self_contained_tests:
+            try:
+                packages.remove(crate)
+                in_crate_packages += [crate]
+            except KeyError:
+                pass
 
         packages.discard('stylo')
 
@@ -264,7 +277,7 @@ class MachCommands(CommandBase):
             env["PATH"] = "%s%s%s" % (path.dirname(self.get_binary_path(False, False)), os.pathsep, env["PATH"])
 
         features = self.servo_features()
-        if len(packages) > 0:
+        if len(packages) > 0 or len(in_crate_packages) > 0:
             args = ["cargo", "bench" if bench else "test", "--manifest-path", self.servo_manifest()]
             for crate in packages:
                 args += ["-p", "%s_tests" % crate]
@@ -429,11 +442,9 @@ class MachCommands(CommandBase):
     @Command('update-manifest',
              description='Run test-wpt --manifest-update SKIP_TESTS to regenerate MANIFEST.json',
              category='testing',
-             parser=create_parser_wpt)
+             parser=create_parser_manifest_update)
     def update_manifest(self, **kwargs):
-        kwargs['test_list'].append(str('SKIP_TESTS'))
-        kwargs['manifest_update'] = True
-        return self.test_wpt(**kwargs)
+        return run_update(self.context.topdir, **kwargs)
 
     @Command('update-wpt',
              description='Update the web platform tests',
@@ -872,7 +883,7 @@ testing/web-platform/mozilla/tests for Servo-only tests""" % reference_path)
     def update_net_cookies(self):
         cache_dir = path.join(self.config["tools"]["cache-dir"], "tests")
         run_file = path.abspath(path.join(PROJECT_TOPLEVEL_PATH,
-                                          "tests", "unit", "net",
+                                          "components", "net", "tests",
                                           "cookie_http_state_utils.py"))
         run_globals = {"__file__": run_file}
         execfile(run_file, run_globals)

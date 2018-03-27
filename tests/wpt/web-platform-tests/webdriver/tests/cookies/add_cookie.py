@@ -17,7 +17,7 @@ def test_add_domain_cookie(session, url, server_config):
     result = session.transport.send("POST", "session/%s/cookie" % session.session_id, create_cookie_request)
     assert result.status == 200
     assert "value" in result.body
-    assert isinstance(result.body["value"], dict)
+    assert result.body["value"] is None
 
     result = session.transport.send("GET", "session/%s/cookie" % session.session_id)
     assert result.status == 200
@@ -36,25 +36,26 @@ def test_add_domain_cookie(session, url, server_config):
 
     assert cookie["name"] == "hello"
     assert cookie["value"] == "world"
-    assert cookie["domain"] == ".%s" % server_config["domains"][""]
+    assert cookie["domain"] == ".%s" % server_config["domains"][""] or cookie["domain"] == "%s" % server_config["domains"][""]
 
 def test_add_cookie_for_ip(session, url, server_config, configuration):
-    session.url = "http://127.0.0.1:%s/404" % (server_config["ports"]["http"][0])
+    session.url = "http://127.0.0.1:%s/common/blank.html" % (server_config["ports"]["http"][0])
     clear_all_cookies(session)
     create_cookie_request = {
         "cookie": {
             "name": "hello",
             "value": "world",
-            "domain": configuration["host"],
+            "domain": "127.0.0.1",
             "path": "/",
             "httpOnly": False,
             "secure": False
         }
     }
+
     result = session.transport.send("POST", "session/%s/cookie" % session.session_id, create_cookie_request)
     assert result.status == 200
     assert "value" in result.body
-    assert isinstance(result.body["value"], dict)
+    assert result.body["value"] is None
 
     result = session.transport.send("GET", "session/%s/cookie" % session.session_id)
     assert result.status == 200
@@ -78,7 +79,7 @@ def test_add_cookie_for_ip(session, url, server_config, configuration):
 def test_add_non_session_cookie(session, url):
     session.url = url("/common/blank.html")
     clear_all_cookies(session)
-    a_year_from_now = int((datetime.utcnow() + timedelta(days=365)).strftime("%s"))
+    a_year_from_now = int((datetime.utcnow() + timedelta(days=365) - datetime.utcfromtimestamp(0)).total_seconds())
     create_cookie_request = {
         "cookie": {
             "name": "hello",
@@ -89,7 +90,7 @@ def test_add_non_session_cookie(session, url):
     result = session.transport.send("POST", "session/%s/cookie" % session.session_id, create_cookie_request)
     assert result.status == 200
     assert "value" in result.body
-    assert isinstance(result.body["value"], dict)
+    assert result.body["value"] is None
 
     result = session.transport.send("GET", "session/%s/cookie" % session.session_id)
     assert result.status == 200
@@ -122,7 +123,7 @@ def test_add_session_cookie(session, url):
     result = session.transport.send("POST", "session/%s/cookie" % session.session_id, create_cookie_request)
     assert result.status == 200
     assert "value" in result.body
-    assert isinstance(result.body["value"], dict)
+    assert result.body["value"] is None
 
     result = session.transport.send("GET", "session/%s/cookie" % session.session_id)
     assert result.status == 200
@@ -136,8 +137,8 @@ def test_add_session_cookie(session, url):
     assert isinstance(cookie["name"], basestring)
     assert "value" in cookie
     assert isinstance(cookie["value"], basestring)
-    assert "expiry" in cookie
-    assert cookie.get("expiry") is None
+    if "expiry" in cookie:
+        assert cookie.get("expiry") is None
 
     assert cookie["name"] == "hello"
     assert cookie["value"] == "world"
@@ -155,7 +156,7 @@ def test_add_session_cookie_with_leading_dot_character_in_domain(session, url, s
     result = session.transport.send("POST", "session/%s/cookie" % session.session_id, create_cookie_request)
     assert result.status == 200
     assert "value" in result.body
-    assert isinstance(result.body["value"], dict)
+    assert result.body["value"] is None
 
     result = session.transport.send("GET", "session/%s/cookie" % session.session_id)
     assert result.status == 200
@@ -174,4 +175,4 @@ def test_add_session_cookie_with_leading_dot_character_in_domain(session, url, s
 
     assert cookie["name"] == "hello"
     assert cookie["value"] == "world"
-    assert cookie["domain"] == ".%s" % server_config["domains"][""]
+    assert cookie["domain"] == ".%s" % server_config["domains"][""] or cookie["domain"] == "%s" % server_config["domains"][""]

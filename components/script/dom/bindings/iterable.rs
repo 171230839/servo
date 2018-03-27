@@ -9,10 +9,9 @@
 use dom::bindings::codegen::Bindings::IterableIteratorBinding::IterableKeyAndValueResult;
 use dom::bindings::codegen::Bindings::IterableIteratorBinding::IterableKeyOrValueResult;
 use dom::bindings::error::Fallible;
-use dom::bindings::nonnull::NonNullJSObjectPtr;
 use dom::bindings::reflector::{DomObject, Reflector, reflect_dom_object};
 use dom::bindings::root::{Dom, DomRoot};
-use dom::bindings::trace::JSTraceable;
+use dom::bindings::trace::{JSTraceable, RootedTraceableBox};
 use dom::globalscope::GlobalScope;
 use dom_struct::dom_struct;
 use js::conversions::ToJSValConvertible;
@@ -20,6 +19,7 @@ use js::jsapi::{HandleValue, Heap, JSContext, MutableHandleObject, JSObject};
 use js::jsval::UndefinedValue;
 use std::cell::Cell;
 use std::ptr;
+use std::ptr::NonNull;
 
 /// The values that an iterator will iterate over.
 #[derive(JSTraceable, MallocSizeOf)]
@@ -73,7 +73,7 @@ impl<T: DomObject + JSTraceable + Iterable> IterableIterator<T> {
 
     /// Return the next value from the iterable object.
     #[allow(non_snake_case)]
-    pub fn Next(&self, cx: *mut JSContext) -> Fallible<NonNullJSObjectPtr> {
+    pub fn Next(&self, cx: *mut JSContext) -> Fallible<NonNull<JSObject>> {
         let index = self.index.get();
         rooted!(in(cx) let mut value = UndefinedValue());
         rooted!(in(cx) let mut rval = ptr::null_mut::<JSObject>());
@@ -105,8 +105,7 @@ impl<T: DomObject + JSTraceable + Iterable> IterableIterator<T> {
         };
         self.index.set(index + 1);
         result.map(|_| {
-            assert!(!rval.is_null());
-            unsafe { NonNullJSObjectPtr::new_unchecked(rval.get()) }
+            NonNull::new(rval.get()).expect("got a null pointer")
         })
     }
 }
@@ -132,10 +131,10 @@ fn key_and_value_return(cx: *mut JSContext,
                         value: HandleValue) -> Fallible<()> {
     let mut dict = unsafe { IterableKeyAndValueResult::empty(cx) };
     dict.done = false;
-    let values = vec![Heap::default(), Heap::default()];
-    values[0].set(key.get());
-    values[1].set(value.get());
-    dict.value = Some(values);
+    dict.value = Some(vec![key, value]
+        .into_iter()
+        .map(|handle| RootedTraceableBox::from_box(Heap::boxed(handle.get())))
+        .collect());
     rooted!(in(cx) let mut dict_value = UndefinedValue());
     unsafe {
         dict.to_jsval(cx, dict_value.handle_mut());
